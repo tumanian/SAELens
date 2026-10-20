@@ -659,6 +659,45 @@ CacheActivationsRunner(cfg).run()
 
 To use the cached activations during training, set `use_cached_activations=True` and `cached_activations_path` to match the `new_cached_activations_path` above option in training configuration.
 
+## Training from a rescomp capture
+
+[rescomp](https://github.com/tumanian/rescomp) stores residual-stream activations compressed (4-9x smaller than float32 for GPT-2 class models, by choice of codec) together with the token ids, by hooking a running model. [rescomp_activations][sae_lens.rescomp_activations] reads such a capture back as a `DataProvider` of shuffled `(train_batch_size_tokens, d_in)` batches, so an SAE trains from the files alone, without running the model. rescomp is an optional dependency: install it with `pip install -e path/to/rescomp` from a checkout of that repository.
+
+Writing a capture takes a `rescomp.Sink` around the forward calls; every forward call becomes one chunk of the capture:
+
+```python
+import rescomp as rc
+import torch
+from sae_lens.load_model import load_model
+
+model = load_model("HookedTransformer", "gpt2", device="cuda")
+with rc.Sink("captures/gpt2_l7", rc.bind(model, [7]), codec="faithful"), torch.no_grad():
+    for batch_tokens in token_batches:            # (batch, context) int64, BOS at position 0
+        model(batch_tokens, stop_at_layer=8, return_type=None)
+```
+
+Training then needs only the capture:
+
+```python
+from sae_lens import SAETrainer, TopKTrainingSAE, TopKTrainingSAEConfig, rescomp_activations, rescomp_capture_info
+from sae_lens.config import SAETrainerConfig
+
+info = rescomp_capture_info("captures/gpt2_l7", layer=7)   # {"d_in": 768, "hook_name": "blocks.7.hook_resid_post"}
+provider = rescomp_activations(
+    "captures/gpt2_l7",
+    layer=7,
+    train_batch_size_tokens=4096,
+    buffer_size_tokens=262_144,
+    device="cuda",
+    exclude_first_position=True,   # position 0 (BOS) of each sequence is never served
+)
+sae = TopKTrainingSAE(TopKTrainingSAEConfig(d_in=info["d_in"], d_sae=16 * info["d_in"], k=32, device="cuda"))
+cfg = SAETrainerConfig(total_training_samples=20_000_000, train_batch_size_samples=4096, lr=3e-4, lr_end=3e-5, device="cuda")
+trained = SAETrainer(cfg, sae, provider).fit()
+```
+
+The capture is read chunk by chunk (each chunk decoded once per pass, see `rescomp_chunks` in `sae_lens.training.rescomp_activations`), padding positions are dropped using the stored attention mask, and the rows are shuffled through the same `mixing_buffer` as `ActivationsStore`; the provider loops over the capture for ever. Lossy codecs (`faithful`, `balanced`, `compact`) change the stored values slightly; the experiment in [rescomp-experiments](https://github.com/tumanian/rescomp-experiments) measures what that does to a trained SAE against training on exact float32 activations.
+
 ## Uploading SAEs to Huggingface
 
 Once you have a set of SAEs that you're happy with, your next step is to share them with the world! SAELens has a `upload_saes_to_huggingface()` function which makes this easy to do. We also provide a [uploading saes to huggingface tutorial](https://github.com/decoderesearch/SAELens/blob/main/tutorials/uploading_saes_to_huggingface.ipynb) with more details.

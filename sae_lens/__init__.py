@@ -72,6 +72,7 @@ from .multi_sae_training_runner import (
 from .pretokenize_runner import PretokenizeRunner, pretokenize_runner
 from .registry import register_sae_class, register_sae_training_class
 from .training.activations_store import ActivationsStore
+from .training.rescomp_activations import rescomp_activations, rescomp_capture_info
 from .training.sae_trainer import SAETrainer
 from .training.upload_saes_to_huggingface import upload_saes_to_huggingface
 
@@ -82,6 +83,8 @@ __all__ = [
     "TrainingSAEConfig",
     "HookedSAETransformer",
     "ActivationsStore",
+    "rescomp_activations",
+    "rescomp_capture_info",
     "LanguageModelSAERunnerConfig",
     "LanguageModelSAETrainingRunner",
     "CacheActivationsRunnerConfig",
