@@ -10,6 +10,7 @@ from sae_lens.saes.topk_sae import TopKTrainingSAE, TopKTrainingSAEConfig
 from sae_lens.training import rescomp_activations as module
 from sae_lens.training.rescomp_activations import (
     rescomp_activations,
+    rescomp_capture_info,
     rescomp_chunks,
 )
 from sae_lens.training.sae_trainer import SAETrainer
@@ -36,7 +37,11 @@ def build_model() -> HookedTransformer:
 
 
 def write_capture(
-    tmp_path: Path, model: HookedTransformer, n_sequences: int, chunk_size: int
+    tmp_path: Path,
+    model: HookedTransformer,
+    n_sequences: int,
+    chunk_size: int,
+    mask: torch.Tensor | None = None,
 ) -> tuple[str, torch.Tensor]:
     """A capture of fp32 activations of random tokens (BOS at position 0), written in chunks; returns
     the stem and the live activations (n_sequences, 8, d_model)."""
@@ -46,6 +51,8 @@ def write_capture(
     sink = rescomp.Sink(stem, rescomp.bind(model, [LAYER]), rescomp.Codec("fp32"))
     with sink, torch.no_grad():
         for i in range(0, n_sequences, chunk_size):
+            if mask is not None:
+                sink.tokens(tokens[i : i + chunk_size], mask[i : i + chunk_size])
             model(tokens[i : i + chunk_size])
     _, cache = model.run_with_cache(tokens, names_filter=HOOK)
     return stem, cache[HOOK]
@@ -71,6 +78,26 @@ def test_rescomp_chunks_keeps_position_0_when_asked(tmp_path: Path):
     chunk = next(rescomp_chunks(stem, LAYER, exclude_first_position=False))
 
     assert torch.equal(chunk, live.reshape(-1, D_MODEL))
+
+
+def test_rescomp_chunks_drops_padding_positions_using_the_stored_mask(tmp_path: Path):
+    mask = torch.ones(4, 8, dtype=torch.long)
+    mask[0, 6:] = 0
+    mask[2, 3:] = 0
+    stem, live = write_capture(
+        tmp_path, build_model(), n_sequences=4, chunk_size=4, mask=mask
+    )
+    expected = torch.cat([live[i, 1 : int(mask[i].sum())] for i in range(4)])
+
+    chunk = next(rescomp_chunks(stem, LAYER))
+
+    assert torch.equal(chunk, expected)
+
+
+def test_rescomp_capture_info_gives_d_in_and_hook_name(tmp_path: Path):
+    stem, _ = write_capture(tmp_path, build_model(), n_sequences=2, chunk_size=2)
+
+    assert rescomp_capture_info(stem, LAYER) == {"d_in": D_MODEL, "hook_name": HOOK}
 
 
 def test_rescomp_activations_batches_are_shuffled_rows_of_the_capture(tmp_path: Path):

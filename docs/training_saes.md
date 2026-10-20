@@ -679,9 +679,10 @@ with rc.Sink("captures/gpt2_l7", rc.bind(model, [7]), codec="faithful"), torch.n
 Training then needs only the capture:
 
 ```python
-from sae_lens import SAETrainer, TopKTrainingSAE, TopKTrainingSAEConfig, rescomp_activations
+from sae_lens import SAETrainer, TopKTrainingSAE, TopKTrainingSAEConfig, rescomp_activations, rescomp_capture_info
 from sae_lens.config import SAETrainerConfig
 
+info = rescomp_capture_info("captures/gpt2_l7", layer=7)   # {"d_in": 768, "hook_name": "blocks.7.hook_resid_post"}
 provider = rescomp_activations(
     "captures/gpt2_l7",
     layer=7,
@@ -690,12 +691,12 @@ provider = rescomp_activations(
     device="cuda",
     exclude_first_position=True,   # position 0 (BOS) of each sequence is never served
 )
-sae = TopKTrainingSAE(TopKTrainingSAEConfig(d_in=768, d_sae=16 * 768, k=32, device="cuda"))
+sae = TopKTrainingSAE(TopKTrainingSAEConfig(d_in=info["d_in"], d_sae=16 * info["d_in"], k=32, device="cuda"))
 cfg = SAETrainerConfig(total_training_samples=20_000_000, train_batch_size_samples=4096, lr=3e-4, lr_end=3e-5, device="cuda")
 trained = SAETrainer(cfg, sae, provider).fit()
 ```
 
-The capture is read chunk by chunk (each chunk decoded once per pass, see `rescomp_chunks` in `sae_lens.training.rescomp_activations`) and shuffled through the same `mixing_buffer` as `ActivationsStore`; the provider loops over the capture for ever. Lossy codecs (`faithful`, `balanced`, `compact`) change the stored values slightly; the experiment in [rescomp-experiments](https://github.com/tumanian/rescomp-experiments) measures what that does to a trained SAE against training on exact float32 activations.
+The capture is read chunk by chunk (each chunk decoded once per pass, see `rescomp_chunks` in `sae_lens.training.rescomp_activations`), padding positions are dropped using the stored attention mask, and the rows are shuffled through the same `mixing_buffer` as `ActivationsStore`; the provider loops over the capture for ever. Lossy codecs (`faithful`, `balanced`, `compact`) change the stored values slightly; the experiment in [rescomp-experiments](https://github.com/tumanian/rescomp-experiments) measures what that does to a trained SAE against training on exact float32 activations.
 
 ## Uploading SAEs to Huggingface
 
